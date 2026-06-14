@@ -72,7 +72,9 @@ async def create_entry(
 
 
 @router.post("/{entry_id}/analyze")
+@limiter.limit("10/minute")
 async def analyze_entry_route(
+    request: Request,
     entry_id: str,
     user: dict = Depends(get_current_user),
     supabase: Client = Depends(get_supabase),
