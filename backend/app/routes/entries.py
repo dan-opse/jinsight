@@ -1,15 +1,14 @@
-import os
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+import logging
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from supabase import create_client, Client
+from supabase import Client
 from app.middleware.auth import get_current_user
-from app.services import gemini
+from app.dependencies import get_supabase
+from app.limiter import limiter
+from app.services import llm
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/entries", tags=["entries"])
-
-
-def get_supabase() -> Client:
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
 class EntryCreate(BaseModel):
@@ -18,8 +17,8 @@ class EntryCreate(BaseModel):
 
 async def process_entry(entry_id: str, content: str, supabase: Client) -> None:
     try:
-        analysis = await gemini.analyze_entry(content)
-        embedding = await gemini.embed_text(content)
+        analysis = await llm.analyze_entry(content)
+        embedding = await llm.embed_text(content)
 
         supabase.table("entry_metadata").update({
             "mood_score": analysis.get("mood_score"),
@@ -29,15 +28,24 @@ async def process_entry(entry_id: str, content: str, supabase: Client) -> None:
             "embedding": embedding,
             "processing_status": "done",
         }).eq("entry_id", entry_id).execute()
-    except Exception as e:
+    except Exception:
         supabase.table("entry_metadata").update(
             {"processing_status": "failed"}
         ).eq("entry_id", entry_id).execute()
         raise
 
 
+async def _run_process_entry_bg(entry_id: str, content: str, supabase: Client) -> None:
+    try:
+        await process_entry(entry_id, content, supabase)
+    except Exception:
+        logger.exception("Background analysis failed for entry %s", entry_id)
+
+
 @router.post("/", status_code=201)
+@limiter.limit("10/minute")
 async def create_entry(
+    request: Request,
     body: EntryCreate,
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
@@ -58,7 +66,7 @@ async def create_entry(
     # Seed a pending metadata row so processing_status is visible immediately
     supabase.table("entry_metadata").insert({"entry_id": entry_id}).execute()
 
-    background_tasks.add_task(process_entry, entry_id, body.content, supabase)
+    background_tasks.add_task(_run_process_entry_bg, entry_id, body.content, supabase)
 
     return {"id": entry_id, "processing_status": "pending"}
 
@@ -73,11 +81,14 @@ async def analyze_entry_route(
     if not result.data or result.data["user_id"] != user["sub"]:
         raise HTTPException(status_code=404, detail="Entry not found")
 
+    meta = supabase.table("entry_metadata").select("processing_status").eq("entry_id", entry_id).execute()
+    if meta.data and meta.data[0].get("processing_status") == "done":
+        return {"processing_status": "done"}
+
     try:
         await process_entry(entry_id, result.data["content"], supabase)
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Analysis failed for entry %s", entry_id)
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"processing_status": "done"}

@@ -5,36 +5,47 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase";
 import { saveEntry, listEntries, analyzeEntry } from "@/lib/api";
+import Nav from "@/components/Nav";
+import { useRequireAuth } from "@/lib/hooks";
+import { formatDate } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
+import type { Entry } from "@/lib/types";
 
-interface Entry {
-  id: string;
-  content: string;
-  created_at: string;
-  entry_metadata?: { mood_score: number | null; processing_status: string }[];
+function MoodBadge({ score }: { score: number }) {
+  const style =
+    score >= 7
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : score >= 4
+      ? "bg-amber-50 text-amber-700 border-amber-200"
+      : "bg-red-50 text-red-700 border-red-200";
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${style}`}>
+      Mood {score}/10
+    </span>
+  );
 }
 
 export default function JournalPage() {
   const router = useRouter();
+  useRequireAuth();
   const [content, setContent] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [analyzing, setAnalyzing] = useState<Set<string>>(new Set());
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) router.replace("/");
-    });
     loadEntries();
-  }, [router]);
+  }, []);
 
   async function loadEntries() {
+    setLoadError(false);
     try {
       const data = await listEntries();
       setEntries(data);
     } catch {
-      /* silently fail on load */
+      setLoadError(true);
     }
   }
 
@@ -46,6 +57,7 @@ export default function JournalPage() {
       setContent("");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      localStorage.setItem("jinsight_insights_stale", "true");
       loadEntries();
     } finally {
       setSaving(false);
@@ -73,75 +85,96 @@ export default function JournalPage() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50">
-      <nav className="border-b border-stone-200 bg-white px-6 py-3 flex items-center justify-between">
-        <span className="font-semibold text-stone-900">Jinsight</span>
-        <div className="flex items-center gap-4 text-sm">
-          <Link href="/dashboard" className="text-stone-500 hover:text-stone-900">
-            Dashboard
-          </Link>
-          <button onClick={handleSignOut} className="text-stone-400 hover:text-stone-700">
-            Sign out
-          </button>
-        </div>
-      </nav>
+    <div className="min-h-screen bg-violet-50">
+      <Nav>
+        <Link href="/dashboard" className="text-slate-500 hover:text-violet-700 transition-colors">
+          Dashboard
+        </Link>
+        <button
+          onClick={handleSignOut}
+          className="text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+        >
+          Sign out
+        </button>
+      </Nav>
 
       <main className="mx-auto max-w-2xl px-6 py-10 space-y-8">
-        <div className="space-y-3">
-          <textarea
+        {/* Write area */}
+        <div className="rounded-2xl bg-white border border-violet-100 shadow-sm overflow-hidden">
+          <Textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="What's on your mind today?"
             rows={10}
-            className="w-full resize-none rounded-lg border border-stone-200 bg-white px-4 py-3 text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-300"
+            className="resize-none rounded-none border-0 border-b border-violet-50 shadow-none px-6 py-5 font-serif text-[15px] text-slate-800 leading-relaxed placeholder:text-slate-300 focus-visible:ring-0 focus-visible:border-violet-200"
           />
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400">{content.length} characters</span>
+          <div className="flex items-center justify-between px-6 py-3 border-t border-violet-50 bg-violet-50/50">
+            <span className="text-xs text-slate-400">{content.length} characters</span>
             <button
               onClick={handleSave}
               disabled={saving || !content.trim()}
-              className="rounded-md bg-stone-900 px-5 py-2 text-sm text-white hover:bg-stone-700 disabled:opacity-40"
+              className="rounded-lg bg-violet-600 px-5 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-40 transition-colors cursor-pointer"
             >
-              {saving ? "Saving…" : saved ? "Saved ✓" : "Save entry"}
+              {saving ? "Saving…" : saved ? "Saved" : "Save entry"}
             </button>
           </div>
         </div>
 
-        {entries.length > 0 && (
+        {/* Past entries */}
+        {loadError ? (
+          <div className="rounded-xl bg-red-50 border border-red-100 px-4 py-3 text-sm text-red-600">
+            Failed to load entries.{" "}
+            <button onClick={loadEntries} className="underline cursor-pointer">
+              Retry
+            </button>
+          </div>
+        ) : entries.length > 0 && (
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-400">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Past entries
             </h2>
             <ul className="space-y-2">
               {entries.map((entry) => {
                 const meta = entry.entry_metadata?.[0];
+                const failed = meta?.processing_status === "failed";
                 return (
                   <li
                     key={entry.id}
-                    className="rounded-lg border border-stone-200 bg-white px-4 py-3 space-y-1"
+                    className="rounded-xl border border-violet-100 bg-white px-4 py-3.5 space-y-2 shadow-sm"
                   >
                     <div className="flex items-center justify-between">
-                      <time className="text-xs text-stone-400">
-                        {new Date(entry.created_at).toLocaleDateString()}
+                      <time className="text-xs text-slate-400">
+                        {formatDate(entry.created_at)}
                       </time>
                       <div className="flex items-center gap-2">
                         {meta?.mood_score != null && (
-                          <span className="text-xs text-stone-500">
-                            mood {meta.mood_score}/10
-                          </span>
+                          <MoodBadge score={meta.mood_score} />
                         )}
                         {meta?.processing_status !== "done" && (
                           <button
                             onClick={() => handleAnalyze(entry.id)}
                             disabled={analyzing.has(entry.id)}
-                            className="text-xs text-stone-400 hover:text-stone-700 disabled:opacity-40"
+                            className={`text-xs transition-colors cursor-pointer disabled:opacity-40 ${
+                              failed
+                                ? "text-red-400 hover:text-red-600"
+                                : "text-violet-400 hover:text-violet-700"
+                            }`}
                           >
-                            {analyzing.has(entry.id) ? "Analyzing…" : "Analyze"}
+                            {analyzing.has(entry.id)
+                              ? "Analyzing…"
+                              : failed
+                              ? "Retry"
+                              : "Analyze"}
                           </button>
                         )}
                       </div>
                     </div>
-                    <p className="text-sm text-stone-600 line-clamp-2">{entry.content}</p>
+                    <Textarea
+                      value={entry.content}
+                      readOnly
+                      rows={3}
+                      className="resize-none border-violet-50 bg-violet-50/40 text-slate-600 leading-relaxed shadow-none focus-visible:ring-0 focus-visible:border-violet-100 cursor-default"
+                    />
                   </li>
                 );
               })}

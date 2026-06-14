@@ -1,15 +1,15 @@
-import os
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
-from supabase import create_client, Client
+from supabase import Client
 from app.middleware.auth import get_current_user
-from app.services import gemini
+from app.dependencies import get_supabase
+from app.services import llm
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-def get_supabase() -> Client:
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+def _thirty_days_ago() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
 
 
 @router.get("/mood")
@@ -18,7 +18,7 @@ async def mood_trend(
     supabase: Client = Depends(get_supabase),
 ):
     """Mood scores for the last 30 days, ordered by entry date."""
-    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    since = _thirty_days_ago()
 
     result = supabase.table("entries").select(
         "created_at, entry_metadata(mood_score)"
@@ -38,7 +38,7 @@ async def insight_cards(
     supabase: Client = Depends(get_supabase),
 ):
     """Generate AI insight cards on demand from the last 30 days of metadata."""
-    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    since = _thirty_days_ago()
 
     result = supabase.table("entries").select(
         "entry_metadata(themes, topics)"
@@ -53,7 +53,7 @@ async def insight_cards(
     if not metadata:
         return {"insights": []}
 
-    insights = await gemini.generate_insights(metadata)
+    insights = await llm.generate_insights(metadata)
     return {"insights": insights}
 
 
@@ -67,7 +67,7 @@ async def search_entries(
     if not q.strip():
         return []
 
-    query_embedding = await gemini.embed_text(q)
+    query_embedding = await llm.embed_text(q)
 
     # Use Supabase RPC for pgvector cosine similarity search
     result = supabase.rpc("search_entries", {
